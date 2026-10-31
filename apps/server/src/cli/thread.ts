@@ -1128,6 +1128,39 @@ const threadInterruptCommand = Command.make("interrupt", {
   ),
 );
 
+const threadStopCommand = Command.make("stop", {
+  ...projectLocationFlags,
+  thread: threadArgument,
+  reason: Flag.String("reason").pipe(
+    Flag.withDescription("Reason the thread is being stopped."),
+    Flag.optional,
+  ),
+  json: jsonFlag,
+}).pipe(
+  Command.withDescription(
+    "Stop a thread as its Stop button does: interrupt the running turn, hold its queued messages, end pull request watches, and stop every task it delegated. Send a message to start it again.",
+  ),
+  Command.withHandler((flags) =>
+    Effect.gen(function* () {
+      const threadId = yield* decodeThreadId(flags.thread);
+      const reason = Option.getOrUndefined(flags.reason);
+      return yield* withThreadTools(
+        flags,
+        Effect.fn("cli.thread.stop")(function* (tools) {
+          const result = yield* interruptThread(tools, {
+            threadId,
+            stop: true,
+            ...(reason === undefined ? {} : { reason }),
+          });
+          yield* flags.json
+            ? printJson(result)
+            : Console.log(`${result.threadId}  ${result.status}`);
+        }),
+      );
+    }).pipe(reportThreadErrors),
+  ),
+);
+
 const threadConfigureCommand = Command.make("configure", {
   ...projectLocationFlags,
   thread: threadArgument,
@@ -1265,6 +1298,7 @@ export const threadCommand = Command.make("thread").pipe(
     threadShowCommand,
     threadOrganizeCommand,
     threadInterruptCommand,
+    threadStopCommand,
     threadConfigureCommand,
     threadWaitCommand,
   ]),

@@ -118,7 +118,7 @@ A script can also manage threads instead of leaving that to an agent:
 
 ```sh
 t3 thread organize "$id" settle            # settle, unsettle, archive, pin, snooze, ...
-t3 thread interrupt "$id" --stop           # stop the run and everything it delegated
+t3 thread stop "$id"                       # stop the turn and everything it delegated
 t3 thread send "$id" "Start over" --restart
 t3 thread configure "$id" --provider claudeAgent --model claude-opus-5-5
 t3 thread wait "$id" --timeout 600000      # exits 3 when the deadline passes
@@ -127,15 +127,16 @@ t3 project list --json
 ```
 
 `organize` settles at the end of the thread's current turn; a failed turn or a
-queued message leaves it active. `interrupt` stops the newest run, and `--stop`
-also holds its queue, ends its pull request watches, and stops every task it
-delegated. `--restart` needs a provider that can redirect a running turn, so
-Claude threads refuse it: stop them with `interrupt --stop`, then send.
+queued message leaves it active. `interrupt` stops the newest run; `stop` does
+what the Stop button does, holding the queue, ending pull request watches, and
+stopping every task the thread delegated — send a message afterwards to start
+it again. `--restart` needs a provider that can redirect a running turn, so
+Claude threads refuse it: use `stop` and then `send` instead.
 `configure` without flags prints the current provider, model, and
 modes. `wait` exits 3 instead of waiting past `--timeout`, so a script can tell
 a slow run from a failed one. `task cancel <taskId>` cancels one delegated task,
 but only from inside a thread, so scripts normally reach for
-`interrupt --stop` instead.
+`stop` instead.
 
 ## Remove an agent
 
