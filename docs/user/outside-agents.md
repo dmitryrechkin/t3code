@@ -138,6 +138,17 @@ a slow run from a failed one. `task cancel <taskId>` cancels one delegated task,
 but only from inside a thread, so scripts normally reach for
 `stop` instead.
 
+Every tool the server exposes is also reachable without waiting for a dedicated
+command:
+
+```sh
+t3 mcp list --filter thread
+t3 mcp call t3_project_list '{"limit": 100}'
+```
+
+Pass `-` as the arguments to read them from stdin. `--json` on `list` adds each
+tool's input schema; on `call` it prints the raw MCP result.
+
 ## Remove an agent
 
 Approved agents appear under **Settings → Sharing & access** like other clients.

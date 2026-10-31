@@ -214,22 +214,38 @@ const makeThreadTools = (session: McpToolSession, origin: string) => {
       tool,
       detail: `The server sent an unexpected ${tool} result. Update the t3 CLI to match the server.`,
     });
+  const callRaw = Effect.fn("cli.thread.callRawTool")(function* (
+    tool: string,
+    args: Readonly<Record<string, unknown>>,
+  ): Effect.fn.Return<
+    typeof ToolResult.Type,
+    ThreadServerUnreachableError | ThreadToolFailedError
+  > {
+    const raw = yield* session
+      .call(tool, args)
+      .pipe(Effect.mapError((cause) => new ThreadServerUnreachableError({ origin, cause })));
+    const result = yield* decodeToolResult(raw).pipe(Effect.mapError(() => unexpected(tool)));
+    if (result.isError === true) {
+      return yield* new ThreadToolFailedError({ tool, detail: toolFailureDetail(result) });
+    }
+    return result;
+  });
   return {
+    callRaw,
     call: Effect.fn("cli.thread.callTool")(function* <S extends Schema.Decoder<unknown>>(
       tool: string,
       args: Readonly<Record<string, unknown>>,
       schema: S,
     ): Effect.fn.Return<S["Type"], ThreadServerUnreachableError | ThreadToolFailedError> {
-      const raw = yield* session
-        .call(tool, args)
-        .pipe(Effect.mapError((cause) => new ThreadServerUnreachableError({ origin, cause })));
-      const result = yield* decodeToolResult(raw).pipe(Effect.mapError(() => unexpected(tool)));
-      if (result.isError === true) {
-        return yield* new ThreadToolFailedError({ tool, detail: toolFailureDetail(result) });
-      }
+      const result = yield* callRaw(tool, args);
       return yield* Schema.decodeUnknownEffect(schema)(result.structuredContent).pipe(
         Effect.mapError(() => unexpected(tool)),
       );
+    }),
+    listTools: Effect.fn("cli.thread.listTools")(function* (cursor?: string) {
+      return yield* session
+        .listTools(cursor)
+        .pipe(Effect.mapError((cause) => new ThreadServerUnreachableError({ origin, cause })));
     }),
   };
 };

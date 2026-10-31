@@ -58,13 +58,47 @@ export interface McpToolSessionOptions {
   readonly fetchImplementation?: (url: string, init?: RequestInit) => Promise<Response>;
 }
 
+export interface McpToolDescription {
+  readonly name: string;
+  readonly description?: string;
+  readonly inputSchema?: unknown;
+}
+
+export interface McpToolsPage {
+  readonly tools: ReadonlyArray<McpToolDescription>;
+  readonly nextCursor?: string;
+}
+
 export interface McpToolSession {
   /** Resolves to the JSON-RPC `result` of `tools/call`, a `CallToolResult`. */
   readonly call: (
     tool: string,
     args: Readonly<Record<string, unknown>>,
   ) => Effect.Effect<unknown, AcpMcpBridgeError>;
+  /** One page of the tools this session may call, in server order. */
+  readonly listTools: (cursor?: string) => Effect.Effect<McpToolsPage, AcpMcpBridgeError>;
 }
+
+const asToolsPage = (result: unknown): McpToolsPage | null => {
+  if (typeof result !== "object" || result === null) return null;
+  const page = result as { tools?: unknown; nextCursor?: unknown };
+  if (!Array.isArray(page.tools)) return null;
+  const tools: Array<McpToolDescription> = [];
+  for (const entry of page.tools) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const tool = entry as { name?: unknown; description?: unknown; inputSchema?: unknown };
+    if (typeof tool.name !== "string") continue;
+    tools.push({
+      name: tool.name,
+      ...(typeof tool.description === "string" ? { description: tool.description } : {}),
+      ...(tool.inputSchema === undefined ? {} : { inputSchema: tool.inputSchema }),
+    });
+  }
+  return {
+    tools,
+    ...(typeof page.nextCursor === "string" ? { nextCursor: page.nextCursor } : {}),
+  };
+};
 
 /**
  * One initialized MCP session over T3 Code's HTTP endpoint, terminated when
@@ -151,6 +185,17 @@ export const mcpToolSession = (
       call: (tool, args) =>
         request("tools/call", { name: tool, arguments: args }).pipe(
           Effect.map((envelope) => envelope.result),
+        ),
+      listTools: (cursor) =>
+        request("tools/list", cursor === undefined ? {} : { cursor }).pipe(
+          Effect.flatMap((envelope) => {
+            const page = asToolsPage(envelope.result);
+            return page === null
+              ? Effect.fail(
+                  new AcpMcpBridgeError("T3 Code MCP tools/list returned an unexpected result."),
+                )
+              : Effect.succeed(page);
+          }),
         ),
     } satisfies McpToolSession;
   });
