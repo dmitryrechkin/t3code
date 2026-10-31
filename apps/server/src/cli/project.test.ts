@@ -129,6 +129,22 @@ it.effect("adds, renames, and removes projects through the V2 project CLI domain
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 
+it.effect("lists a project through the CLI without changing it", () =>
+  Effect.gen(function* () {
+    const baseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-v2-project-list-"));
+    const workspaceRoot = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), "t3-v2-project-list-workspace-"),
+    );
+
+    yield* runCli(["project", "add", workspaceRoot, "--title", "Gamma", "--base-dir", baseDir]);
+    const before = (yield* readProjects(baseDir)).projects;
+    yield* runCli(["project", "list", "--json", "--base-dir", baseDir]);
+
+    assert.deepEqual((yield* readProjects(baseDir)).projects, before);
+    assert.equal(before[0]?.title, "Gamma");
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
 it.effect("lists projects as id, title, and workspace root in text or JSON", () =>
   Effect.sync(() => {
     const projects = [
