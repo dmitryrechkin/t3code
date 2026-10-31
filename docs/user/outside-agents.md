@@ -143,11 +143,15 @@ command:
 
 ```sh
 t3 mcp list --filter thread
+t3 mcp describe t3_thread_launch        # arguments, types, which are required
 t3 mcp call t3_project_list '{"limit": 100}'
+t3 mcp call t3_thread_launch --arg title=x --arg message="Reply: OK"
 ```
 
 Pass `-` as the arguments to read them from stdin. `--json` on `list` adds each
-tool's input schema; on `call` it prints the raw MCP result.
+tool's input schema; on `call` it prints the raw MCP result. Required arguments
+are checked before the call, so a missing one names itself instead of failing on
+the server.
 
 ## Remove an agent
 
