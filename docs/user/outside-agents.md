@@ -129,7 +129,9 @@ t3 project list --json
 `organize` settles at the end of the thread's current turn; a failed turn or a
 queued message leaves it active. `interrupt` stops the newest run, and `--stop`
 also holds its queue, ends its pull request watches, and stops every task it
-delegated. `configure` without flags prints the current provider, model, and
+delegated. `--restart` needs a provider that can redirect a running turn, so
+Claude threads refuse it: stop them with `interrupt --stop`, then send.
+`configure` without flags prints the current provider, model, and
 modes. `wait` exits 3 instead of waiting past `--timeout`, so a script can tell
 a slow run from a failed one. `task cancel <taskId>` cancels one delegated task,
 but only from inside a thread, so scripts normally reach for
