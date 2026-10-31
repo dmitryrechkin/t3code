@@ -3,7 +3,15 @@ import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
-import { listAllTools, parseToolArguments, toolResultText } from "./mcp.ts";
+import {
+  describeTool,
+  listAllTools,
+  parseArgPairs,
+  parseToolArguments,
+  toolParameters,
+  toolResultText,
+  validateToolArguments,
+} from "./mcp.ts";
 import { ThreadUsageError, type ThreadTools } from "./thread.ts";
 
 const scriptedPages = (pages: ReadonlyArray<{ tools: Array<{ name: string }>; nextCursor?: string }>) => {
@@ -71,5 +79,66 @@ it.effect("prints structured content before text parts", () =>
       "first\nsecond",
     );
     assert.strictEqual(toolResultText({}), "");
+  }),
+);
+
+const threadListTool = {
+  name: "t3_thread_list",
+  description: "List threads newest first.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      projectId: { type: "string", description: "One project." },
+      limit: { type: "integer" },
+    },
+    required: ["projectId"],
+  },
+};
+
+it.effect("reads --arg pairs, parsing JSON values and keeping text values", () =>
+  Effect.gen(function* () {
+    const args = yield* parseArgPairs(
+      ['projectId="abc"', "limit=3", "title=hello world", "flag=true"],
+      { extra: 1 },
+    );
+
+    assert.deepStrictEqual(args, {
+      extra: 1,
+      projectId: "abc",
+      limit: 3,
+      title: "hello world",
+      flag: true,
+    });
+  }),
+);
+
+it.effect("refuses an --arg that is not key=value", () =>
+  Effect.gen(function* () {
+    const failure = yield* Effect.flip(parseArgPairs(["nope"], {}));
+
+    assert.instanceOf(failure, ThreadUsageError);
+  }),
+);
+
+it.effect("describes a tool's parameters and required ones", () =>
+  Effect.sync(() => {
+    assert.deepStrictEqual(toolParameters(threadListTool), [
+      { name: "projectId", type: "string", required: true, description: "One project." },
+      { name: "limit", type: "integer", required: false },
+    ]);
+    assert.include(describeTool(threadListTool), "projectId  string  required  One project.");
+  }),
+);
+
+it.effect("refuses a call the schema shows is missing a required argument", () =>
+  Effect.gen(function* () {
+    const failure = yield* Effect.flip(validateToolArguments(threadListTool, { limit: 3 }));
+
+    assert.instanceOf(failure, ThreadUsageError);
+    assert.include(failure.message, "projectId");
+    assert.deepStrictEqual(
+      yield* validateToolArguments(threadListTool, { projectId: "p1" }),
+      { projectId: "p1" },
+    );
   }),
 );

@@ -22,6 +22,7 @@ const jsonFlag = Flag.Boolean("json").pipe(
 );
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const decodeJsonValue = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 const decodeToolArguments = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
 );
@@ -73,6 +74,96 @@ export const toolResultText = (result: {
     .join("\n");
 };
 
+/** `--arg key=value` entries, with JSON values when they parse and text otherwise. */
+export const parseArgPairs = Effect.fn("cli.mcp.parseArgPairs")(function* (
+  pairs: ReadonlyArray<string>,
+  into: Readonly<Record<string, unknown>>,
+) {
+  const merged: Record<string, unknown> = { ...into };
+  for (const pair of pairs) {
+    const separator = pair.indexOf("=");
+    if (separator <= 0) {
+      return yield* new ThreadUsageError({
+        detail: `'${pair}' is not a --arg key=value pair.`,
+      });
+    }
+    const key = pair.slice(0, separator).trim();
+    const raw = pair.slice(separator + 1);
+    merged[key] = Option.match(decodeJsonValue(raw), {
+      onNone: () => raw,
+      onSome: (value) => value,
+    });
+  }
+  return merged;
+});
+
+interface ToolParameter {
+  readonly name: string;
+  readonly type: string;
+  readonly required: boolean;
+  readonly description?: string;
+}
+
+/** The parameters a tool's JSON Schema declares, in declared order. */
+export const toolParameters = (tool: McpToolDescription): ReadonlyArray<ToolParameter> => {
+  const schema = tool.inputSchema as
+    | {
+        properties?: Record<string, { type?: unknown; description?: unknown }>;
+        required?: Array<string>;
+      }
+    | undefined;
+  const properties = schema?.properties ?? {};
+  const required = new Set(schema?.required ?? []);
+  const typeOf = (property: { type?: unknown } | undefined) =>
+    Array.isArray(property?.type)
+      ? property.type.join(" | ")
+      : typeof property?.type === "string"
+        ? property.type
+        : "any";
+  return Object.entries(properties).map(([name, property]) => ({
+    name,
+    type: typeOf(property),
+    required: required.has(name),
+    ...(typeof property?.description === "string" && property.description.length > 0
+      ? { description: firstLine(property.description) }
+      : {}),
+  }));
+};
+
+/** Refuses a call the tool's schema already shows is missing required arguments. */
+export const validateToolArguments = (
+  tool: McpToolDescription,
+  args: Readonly<Record<string, unknown>>,
+) => {
+  const missing = toolParameters(tool)
+    .filter((parameter) => parameter.required && args[parameter.name] === undefined)
+    .map((parameter) => parameter.name);
+  return missing.length === 0
+    ? Effect.succeed(args)
+    : Effect.fail(
+        new ThreadUsageError({
+          detail: `${tool.name} needs ${missing.join(", ")}. Run: t3 mcp describe ${tool.name}`,
+        }),
+      );
+};
+
+export const describeTool = (tool: McpToolDescription) => {
+  const parameters = toolParameters(tool);
+  const lines = [
+    tool.name,
+    ...(tool.description === undefined ? [] : [`  ${tool.description}`]),
+    "",
+    parameters.length === 0 ? "  Takes no arguments." : "Arguments:",
+    ...parameters.map(
+      (parameter) =>
+        `  ${parameter.name}  ${parameter.type}${parameter.required ? "  required" : ""}${
+          parameter.description === undefined ? "" : `  ${parameter.description}`
+        }`,
+    ),
+  ];
+  return lines.join("\n");
+};
+
 const firstLine = (text: string) => text.trim().split("\n")[0]?.trim() ?? "";
 
 const mcpListCommand = Command.make("list", {
@@ -109,6 +200,33 @@ const mcpListCommand = Command.make("list", {
   ),
 );
 
+const mcpDescribeCommand = Command.make("describe", {
+  ...projectLocationFlags,
+  tool: Argument.String("tool").pipe(
+    Argument.withDescription("Tool name, as `t3 mcp list` prints it."),
+  ),
+  json: jsonFlag,
+}).pipe(
+  Command.withDescription("Show one MCP tool's arguments and what each one means."),
+  Command.withHandler((flags) =>
+    withThreadTools(
+      flags,
+      Effect.fn("cli.mcp.describe")(function* (tools) {
+        const tool = (yield* listAllTools(tools)).find((entry) => entry.name === flags.tool);
+        if (tool === undefined) {
+          return yield* new ThreadUsageError({
+            detail: `No MCP tool named '${flags.tool}'. Run: t3 mcp list --filter ${flags.tool}`,
+          });
+        }
+        if (flags.json) {
+          return yield* printJson(tool);
+        }
+        yield* Console.log(describeTool(tool));
+      }),
+    ).pipe(reportThreadErrors),
+  ),
+);
+
 const mcpCallCommand = Command.make("call", {
   ...projectLocationFlags,
   tool: Argument.String("tool").pipe(
@@ -120,16 +238,28 @@ const mcpCallCommand = Command.make("call", {
     ),
     Argument.optional,
   ),
+  arg: Flag.String("arg").pipe(
+    Flag.withDescription("One key=value argument, repeated once per argument. Overrides the JSON."),
+    Flag.atLeast(0),
+  ),
   json: jsonFlag,
 }).pipe(
   Command.withDescription("Call one MCP tool with JSON arguments and print its result."),
   Command.withHandler((flags) =>
     Effect.gen(function* () {
-      const args = yield* parseToolArguments(Option.getOrElse(flags.arguments, () => "{}"));
+      const parsed = yield* parseToolArguments(Option.getOrElse(flags.arguments, () => "{}"));
+      const args = yield* parseArgPairs(flags.arg, parsed);
       return yield* withThreadTools(
         flags,
         Effect.fn("cli.mcp.call")(function* (tools) {
-          const result = yield* tools.callRaw(flags.tool, args);
+          const tool = (yield* listAllTools(tools)).find((entry) => entry.name === flags.tool);
+          if (tool === undefined) {
+            return yield* new ThreadUsageError({
+              detail: `No MCP tool named '${flags.tool}'. Run: t3 mcp list --filter ${flags.tool}`,
+            });
+          }
+          const valid = yield* validateToolArguments(tool, args);
+          const result = yield* tools.callRaw(flags.tool, valid);
           if (flags.json) {
             return yield* printJson(result);
           }
@@ -142,6 +272,6 @@ const mcpCallCommand = Command.make("call", {
 );
 
 export const mcpCommand = Command.make("mcp").pipe(
-  Command.withDescription("List and call the MCP tools of the running server."),
-  Command.withSubcommands([mcpListCommand, mcpCallCommand]),
+  Command.withDescription("List, describe, and call the MCP tools of the running server."),
+  Command.withSubcommands([mcpListCommand, mcpDescribeCommand, mcpCallCommand]),
 );
