@@ -2,7 +2,17 @@ import { assert, it } from "@effect/vitest";
 import { RunId, ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
-import { readLatestMessages, type ThreadTools, waitForRun } from "./thread.ts";
+import {
+  configureThread,
+  interruptThread,
+  organizeThread,
+  readLatestMessages,
+  readThreadBranch,
+  waitForThread,
+  ThreadToolFailedError,
+  type ThreadTools,
+  waitForRun,
+} from "./thread.ts";
 
 const threadId = ThreadId.make("thread-1");
 const runId = RunId.make("run-1");
@@ -158,5 +168,160 @@ it.effect("show returns a --messages count larger than one call can spread", () 
       messages.map((item) => item.itemId),
       latest(200_000),
     );
+  }),
+);
+
+it.effect("organize sends only the thread and the action it was given", () =>
+  Effect.gen(function* () {
+    const { tools, calls } = scriptedTools({
+      t3_thread_organize: [{ sequence: 7 }],
+    });
+
+    const result = yield* organizeThread(tools, { threadId, action: "settle" });
+
+    assert.deepStrictEqual(result, { sequence: 7 });
+    assert.deepStrictEqual(calls, [
+      { tool: "t3_thread_organize", args: { threadId, action: "settle" } },
+    ]);
+  }),
+);
+
+it.effect("organize passes snoozedUntil only when it was given", () =>
+  Effect.gen(function* () {
+    const { tools, calls } = scriptedTools({
+      t3_thread_organize: [{ sequence: 8 }],
+    });
+
+    yield* organizeThread(tools, {
+      threadId,
+      action: "snooze",
+      snoozedUntil: "2026-11-01T09:00:00.000Z",
+    });
+
+    assert.deepStrictEqual(calls[0]?.args, {
+      threadId,
+      action: "snooze",
+      snoozedUntil: "2026-11-01T09:00:00.000Z",
+    });
+  }),
+);
+
+it.effect("interrupt forwards stop and reason only when they were given", () =>
+  Effect.gen(function* () {
+    const { tools, calls } = scriptedTools({
+      t3_thread_interrupt: [
+        { threadId, runId, status: "interrupt_requested" },
+        { threadId, runId: null, status: "no_active_run" },
+      ],
+    });
+
+    yield* interruptThread(tools, { threadId, stop: true, reason: "hung" });
+    yield* interruptThread(tools, { threadId });
+
+    assert.deepStrictEqual(calls, [
+      { tool: "t3_thread_interrupt", args: { threadId, stop: true, reason: "hung" } },
+      { tool: "t3_thread_interrupt", args: { threadId } },
+    ]);
+  }),
+);
+
+it.effect("configure reads without a selection and writes with one", () =>
+  Effect.gen(function* () {
+    const configuration = {
+      threadId,
+      modelSelection: { instanceId: "claude", model: "opus" },
+      runtimeMode: "auto",
+      interactionMode: "agent",
+    };
+    const { tools, calls } = scriptedTools({
+      t3_thread_configure: [configuration, configuration],
+    });
+
+    yield* configureThread(tools, threadId);
+    yield* configureThread(tools, threadId, { instanceId: "claude", model: "opus" });
+
+    assert.deepStrictEqual(calls, [
+      { tool: "t3_thread_configure", args: { threadId } },
+      {
+        tool: "t3_thread_configure",
+        args: { threadId, modelSelection: { instanceId: "claude", model: "opus" } },
+      },
+    ]);
+  }),
+);
+
+it.effect("wait with a deadline that already passed reports it without polling", () =>
+  Effect.gen(function* () {
+    const { tools, calls } = scriptedTools({});
+
+    assert.deepStrictEqual(yield* waitForThread(tools, threadId, { timeoutMs: -1 }), {
+      type: "deadline",
+    });
+    assert.lengthOf(calls, 0);
+  }),
+);
+
+it.effect("wait returns the run's terminal status without a run id", () =>
+  Effect.gen(function* () {
+    const { tools, calls } = scriptedTools({
+      t3_thread_wait: [{ threadId, runId, status: "completed", timedOut: false }],
+    });
+
+    assert.deepStrictEqual(yield* waitForThread(tools, threadId, {}), {
+      type: "ended",
+      runId,
+      status: "completed",
+    });
+    assert.deepStrictEqual(calls, [
+      { tool: "t3_thread_wait", args: { threadId, timeoutMs: 15_000 } },
+    ]);
+  }),
+);
+
+it.effect("wait stops on a deadline instead of spending it on a pending question", () =>
+  Effect.gen(function* () {
+    const { tools } = scriptedTools({
+      t3_thread_wait: [
+        { threadId, runId, status: "running", timedOut: true },
+        { threadId, runId, status: "running", timedOut: true },
+      ],
+      t3_thread_read: [{ thread: { pendingRequestCount: 1 } }],
+    });
+
+    assert.deepStrictEqual(yield* waitForThread(tools, threadId, {}), { type: "needs_input" });
+  }),
+);
+
+it.effect("wait follows a named run rather than the newest one", () =>
+  Effect.gen(function* () {
+    const { tools, calls } = scriptedTools({
+      t3_thread_wait: [{ threadId, runId, status: "failed", timedOut: false }],
+    });
+
+    yield* waitForThread(tools, threadId, { runId });
+
+    assert.deepStrictEqual(calls[0]?.args, { threadId, runId, timeoutMs: 15_000 });
+  }),
+);
+
+it.effect("a branch lookup reads the thread's workspace instead of guessing", () =>
+  Effect.gen(function* () {
+    const { tools, calls } = scriptedTools({
+      t3_thread_read: [{ thread: { branch: "PLAT-240" } }],
+    });
+
+    assert.strictEqual(yield* readThreadBranch(tools, threadId), "PLAT-240");
+    assert.deepStrictEqual(calls, [
+      { tool: "t3_thread_read", args: { threadId, limit: 1, runLimit: 1 } },
+    ]);
+  }),
+);
+
+it.effect("a thread that cannot be read has no branch to filter on", () =>
+  Effect.gen(function* () {
+    const call = (() =>
+      Effect.fail(new ThreadToolFailedError({ tool: "t3_thread_read", detail: "gone" }))) as unknown as ThreadTools["call"];
+
+    assert.isNull(yield* readThreadBranch({ call }, threadId));
   }),
 );

@@ -453,6 +453,47 @@ const runProjectMutation = Effect.fn("runProjectMutation")(function* (
   );
 });
 
+const jsonFlag = Flag.Boolean("json").pipe(
+  Flag.withDescription("Print JSON instead of text."),
+  Flag.withDefault(false),
+);
+
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+
+/** Text one line per project, or their JSON: id, title, workspace root. */
+export const projectListOutput = (
+  projects: ReadonlyArray<{ readonly id: string; readonly title: string; readonly workspaceRoot: string }>,
+  json: boolean,
+) =>
+  json
+    ? encodeJson(projects)
+    : projects.map((project) => `${project.id}  ${project.title}  ${project.workspaceRoot}`).join("\n");
+
+const projectListCommand = Command.make("list", {
+  ...projectLocationFlags,
+  json: jsonFlag,
+}).pipe(
+  Command.withDescription("List projects with their ids and workspace roots."),
+  Command.withHandler((flags) =>
+    runProjectMutation(
+      flags,
+      Effect.fn("projectListMutation")(function* ({ snapshot }) {
+        const projects = snapshot.projects.filter((project) => project.deletedAt === null);
+        return yield* Effect.sync(() =>
+          projectListOutput(
+            projects.map((project) => ({
+              id: project.id,
+              title: project.title,
+              workspaceRoot: project.workspaceRoot,
+            })),
+            flags.json,
+          ),
+        );
+      }),
+    ),
+  ),
+);
+
 const projectAddCommand = Command.make("add", {
   ...projectLocationFlags,
   workspaceRoot: Argument.String("path").pipe(
@@ -582,5 +623,10 @@ const projectRenameCommand = Command.make("rename", {
 
 export const projectCommand = Command.make("project").pipe(
   Command.withDescription("Manage projects."),
-  Command.withSubcommands([projectAddCommand, projectRemoveCommand, projectRenameCommand]),
+  Command.withSubcommands([
+    projectListCommand,
+    projectAddCommand,
+    projectRemoveCommand,
+    projectRenameCommand,
+  ]),
 );

@@ -29,6 +29,7 @@ import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import { cli } from "../binCli.ts";
+import { projectListOutput } from "./project.ts";
 import * as ServerConfig from "../config.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as EventStore from "../orchestration-v2/EventStore.ts";
@@ -126,6 +127,21 @@ it.effect("adds, renames, and removes projects through the V2 project CLI domain
     yield* runCli(["project", "remove", added?.id ?? "", "--base-dir", baseDir]);
     assert.deepEqual((yield* readProjects(baseDir)).projects, []);
   }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("lists projects as id, title, and workspace root in text or JSON", () =>
+  Effect.sync(() => {
+    const projects = [
+      { id: "p1", title: "Alpha", workspaceRoot: "/work/alpha" },
+      { id: "p2", title: "Beta", workspaceRoot: "/work/beta" },
+    ];
+
+    assert.strictEqual(
+      projectListOutput(projects, false),
+      "p1  Alpha  /work/alpha\np2  Beta  /work/beta",
+    );
+    assert.deepStrictEqual(JSON.parse(projectListOutput(projects, true)), projects);
+  }),
 );
 
 it.effect.each(["snapshot", "mutation"] as const)(

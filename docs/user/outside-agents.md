@@ -114,6 +114,27 @@ the message to read it from stdin.
 2 when the agent waits for an answer you give in the app. Add `--json` for a
 result that always includes the thread id.
 
+A script can also manage threads instead of leaving that to an agent:
+
+```sh
+t3 thread organize "$id" settle            # settle, unsettle, archive, pin, snooze, ...
+t3 thread interrupt "$id" --stop           # stop the run and everything it delegated
+t3 thread send "$id" "Start over" --restart
+t3 thread configure "$id" --provider claudeAgent --model claude-opus-5-5
+t3 thread wait "$id" --timeout 600000      # exits 3 when the deadline passes
+t3 thread list --branch PLAT-240
+t3 project list --json
+```
+
+`organize` settles at the end of the thread's current turn; a failed turn or a
+queued message leaves it active. `interrupt` stops the newest run, and `--stop`
+also holds its queue, ends its pull request watches, and stops every task it
+delegated. `configure` without flags prints the current provider, model, and
+modes. `wait` exits 3 instead of waiting past `--timeout`, so a script can tell
+a slow run from a failed one. `task cancel <taskId>` cancels one delegated task,
+but only from inside a thread, so scripts normally reach for
+`interrupt --stop` instead.
+
 ## Remove an agent
 
 Approved agents appear under **Settings → Sharing & access** like other clients.
