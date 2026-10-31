@@ -121,6 +121,9 @@ t3 thread organize "$id" settle            # settle, unsettle, archive, pin, sno
 t3 thread stop "$id"                       # stop the turn and everything it delegated
 t3 thread send "$id" "Start over" --restart
 t3 thread configure "$id" --provider claudeAgent --model claude-opus-5-5
+t3 models --search opus                    # what this environment may launch
+t3 thread prs "$id"                        # pull requests linked to the thread
+t3 thread rename "$id" "DEV-123 short title"
 t3 thread wait "$id" --timeout 600000      # exits 3 when the deadline passes
 t3 thread list --branch PLAT-240
 t3 project list --json

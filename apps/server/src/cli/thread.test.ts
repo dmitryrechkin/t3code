@@ -7,9 +7,11 @@ import {
   interruptThread,
   organizeThread,
   readLatestMessages,
-  readThreadBranch,
+  readThreadPullRequests,
+  renameThread,
+  matchThreadsOnBranch,
+  threadsOnBranch,
   waitForThread,
-  ThreadToolFailedError,
   type ThreadTools,
   waitForRun,
 } from "./thread.ts";
@@ -304,24 +306,101 @@ it.effect("wait follows a named run rather than the newest one", () =>
   }),
 );
 
-it.effect("a branch lookup reads the thread's workspace instead of guessing", () =>
+it.effect("a branch filter keeps only the threads the list already marks", () =>
+  Effect.sync(() => {
+    const threads = [
+      { threadId: "a", branch: "PLAT-240" },
+      { threadId: "b", branch: "PLAT-241" },
+      { threadId: "c", branch: null },
+    ] as unknown as ReadonlyArray<Parameters<typeof threadsOnBranch>[0][number]>;
+
+    assert.deepStrictEqual(
+      threadsOnBranch(threads, "PLAT-240").map((thread) => thread.threadId),
+      ["a"],
+    );
+  }),
+);
+
+it.effect("an older server without list branches still filters by reading", () =>
   Effect.gen(function* () {
     const { tools, calls } = scriptedTools({
-      t3_thread_read: [{ thread: { branch: "PLAT-240" } }],
+      t3_thread_read: [
+        { thread: { branch: "PLAT-240" } },
+        { thread: { branch: "PLAT-241" } },
+      ],
+    });
+    const threads = [
+      { threadId: "a" },
+      { threadId: "b" },
+    ] as unknown as ReadonlyArray<Parameters<typeof threadsOnBranch>[0][number]>;
+
+    const matches = yield* matchThreadsOnBranch(tools, threads, "PLAT-240");
+
+    assert.deepStrictEqual(
+      matches.map((thread) => [thread.threadId, thread.branch]),
+      [["a", "PLAT-240"]],
+    );
+    assert.lengthOf(calls, 2);
+  }),
+);
+
+it.effect("a server that reports branches costs no extra reads", () =>
+  Effect.gen(function* () {
+    const { tools, calls } = scriptedTools({});
+    const threads = [
+      { threadId: "a", branch: "PLAT-240" },
+      { threadId: "b", branch: null },
+    ] as unknown as ReadonlyArray<Parameters<typeof threadsOnBranch>[0][number]>;
+
+    const matches = yield* matchThreadsOnBranch(tools, threads, "PLAT-240");
+
+    assert.deepStrictEqual(
+      matches.map((thread) => thread.threadId),
+      ["a"],
+    );
+    assert.lengthOf(calls, 0);
+  }),
+);
+
+it.effect("prs asks for the thread's linked pull requests", () =>
+  Effect.gen(function* () {
+    const { tools, calls } = scriptedTools({
+      list_thread_pull_requests: [{ pullRequests: [] }],
     });
 
-    assert.strictEqual(yield* readThreadBranch(tools, threadId), "PLAT-240");
+    yield* readThreadPullRequests(tools, threadId);
+
     assert.deepStrictEqual(calls, [
-      { tool: "t3_thread_read", args: { threadId, limit: 1, runLimit: 1 } },
+      { tool: "list_thread_pull_requests", args: { threadId } },
     ]);
   }),
 );
 
-it.effect("a thread that cannot be read has no branch to filter on", () =>
+it.effect("rename sends the thread, the action, and the title", () =>
   Effect.gen(function* () {
-    const call = (() =>
-      Effect.fail(new ThreadToolFailedError({ tool: "t3_thread_read", detail: "gone" }))) as unknown as ThreadTools["call"];
+    const { tools, calls } = scriptedTools({
+      t3_thread_update: [
+        {
+          threadId,
+          action: "rename",
+          commandId: "command:1",
+          sequence: 1,
+          title: "PLAT-240 CLI validation",
+          titleRegeneration: null,
+          linkedPullRequest: null,
+          updatedAt: "2026-10-31T00:00:00.000Z",
+        },
+      ],
+    });
 
-    assert.isNull(yield* readThreadBranch({ call }, threadId));
+    const result = yield* renameThread(tools, threadId, "PLAT-240 CLI validation");
+
+    assert.equal(result.title, "PLAT-240 CLI validation");
+    assert.deepStrictEqual(calls, [
+      {
+        tool: "t3_thread_update",
+        args: { threadId, action: "rename", title: "PLAT-240 CLI validation" },
+      },
+    ]);
   }),
 );

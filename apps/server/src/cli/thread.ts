@@ -12,8 +12,8 @@ import {
   RuntimeMode,
   RunId,
   ThreadId,
+  ThreadMetadataMcpUpdateResult,
   TrimmedNonEmptyString,
-  type OrchestratorMcpThreadDetail,
   type OrchestratorMcpThreadListItem,
   type OrchestratorMcpThreadStatus,
   type OrchestratorMcpThreadTimelineItem,
@@ -639,20 +639,86 @@ export const configureThread = Effect.fn("cli.thread.configureThread")(function*
   );
 });
 
+/** The threads running on one branch, as `thread list --branch` filters them. */
+export const threadsOnBranch = (
+  threads: ReadonlyArray<OrchestratorMcpThreadListItem>,
+  branch: string,
+) => threads.filter((thread) => thread.branch === branch);
+
 /**
- * The workspace branch a thread runs on, or null when it runs in its project
- * folder. A deleted thread reads as null so one stale row cannot break a sweep.
+ * The branch a thread runs on, for servers that predate the list field. Reads
+ * look like a missing branch, so one stale thread cannot break a sweep.
  */
-export const readThreadBranch = Effect.fn("cli.thread.readThreadBranch")(function* (
+const readThreadBranch = Effect.fn("cli.thread.readThreadBranch")(function* (
   tools: ThreadTools,
   threadId: ThreadId,
 ) {
   return yield* tools
     .call("t3_thread_read", { threadId, limit: 1, runLimit: 1 }, OrchestratorMcpThreadReadResult)
     .pipe(
-      Effect.map((page): OrchestratorMcpThreadDetail["branch"] => page.thread.branch ?? null),
+      Effect.map((page): string | null => page.thread.branch ?? null),
       Effect.orElseSucceed(() => null),
     );
+});
+
+/** `threadsOnBranch`, reading each thread when the server does not report branches. */
+export const matchThreadsOnBranch = Effect.fn("cli.thread.matchThreadsOnBranch")(function* (
+  tools: ThreadTools,
+  threads: ReadonlyArray<OrchestratorMcpThreadListItem>,
+  branch: string,
+) {
+  if (threads.every((thread) => thread.branch !== undefined)) {
+    return threadsOnBranch(threads, branch);
+  }
+  const matches: Array<OrchestratorMcpThreadListItem> = [];
+  for (const thread of threads) {
+    if ((yield* readThreadBranch(tools, thread.threadId)) === branch) {
+      matches.push({ ...thread, branch });
+    }
+  }
+  return matches;
+});
+
+const ThreadPullRequest = Schema.Struct({
+  host: Schema.String,
+  repository: Schema.String,
+  number: Schema.Int,
+  url: Schema.String,
+  source: Schema.String,
+  watching: Schema.Boolean,
+  state: Schema.NullOr(Schema.String),
+  title: Schema.NullOr(Schema.String),
+  headBranch: Schema.NullOr(Schema.String),
+  baseBranch: Schema.NullOr(Schema.String),
+  isDraft: Schema.NullOr(Schema.Boolean),
+});
+const ThreadPullRequestsResult = Schema.Struct({
+  pullRequests: Schema.Array(ThreadPullRequest),
+});
+
+/** The pull requests linked to one thread, bottom of the stack first. */
+export const readThreadPullRequests = Effect.fn("cli.thread.readThreadPullRequests")(function* (
+  tools: ThreadTools,
+  threadId: ThreadId,
+) {
+  return yield* tools.call(
+    "list_thread_pull_requests",
+    { threadId },
+    ThreadPullRequestsResult,
+  );
+});
+
+/** Renames a thread, the title the board uses to name ticket threads. */
+export const renameThread = Effect.fn("cli.thread.renameThread")(function* (
+  tools: ThreadTools,
+  threadId: ThreadId,
+  title: string,
+) {
+  return yield* tools.call(
+    "t3_thread_update",
+    { threadId, action: "rename", title },
+    ThreadMetadataMcpUpdateResult,
+  );
 });
 
 export type ThreadWaitOutcome =
@@ -832,22 +898,13 @@ const threadListCommand = Command.make("list", {
           }
           return;
         }
-        const branch = flags.branch.value;
-        const listed = yield* Effect.forEach(
-          threads,
-          (thread) =>
-            readThreadBranch(tools, thread.threadId).pipe(
-              Effect.map((threadBranch) => ({ thread, branch: threadBranch })),
-            ),
-          { concurrency: 8 },
-        );
-        const matches = listed.filter((entry) => entry.branch === branch);
+        const matches = yield* matchThreadsOnBranch(tools, threads, flags.branch.value);
         if (flags.json) {
-          return yield* printJson(matches.map((entry) => ({ ...entry.thread, branch: entry.branch })));
+          return yield* printJson(matches);
         }
-        for (const entry of matches) {
+        for (const thread of matches) {
           yield* Console.log(
-            `${entry.thread.threadId}  ${entry.thread.status.padEnd(11)}  ${entry.branch}  ${entry.thread.title}`,
+            `${thread.threadId}  ${thread.status.padEnd(11)}  ${thread.branch ?? "(no branch)"}  ${thread.title}`,
           );
         }
       }),
@@ -1289,6 +1346,66 @@ const threadWaitCommand = Command.make("wait", {
   ),
 );
 
+const threadPullRequestsCommand = Command.make("prs", {
+  ...projectLocationFlags,
+  thread: threadArgument,
+  json: jsonFlag,
+}).pipe(
+  Command.withDescription("List the pull requests linked to a thread, bottom of the stack first."),
+  Command.withHandler((flags) =>
+    Effect.gen(function* () {
+      const threadId = yield* decodeThreadId(flags.thread);
+      return yield* withThreadTools(
+        flags,
+        Effect.fn("cli.thread.prs")(function* (tools) {
+          const result = yield* readThreadPullRequests(tools, threadId);
+          if (flags.json) {
+            return yield* printJson(result);
+          }
+          if (result.pullRequests.length === 0) {
+            yield* Console.log("No pull requests are linked.");
+            return;
+          }
+          for (const pullRequest of result.pullRequests) {
+            yield* Console.log(
+              [
+                pullRequest.state ?? "unknown",
+                `#${pullRequest.number}`,
+                pullRequest.title ?? pullRequest.repository,
+                pullRequest.url,
+              ].join("  "),
+            );
+          }
+        }),
+      );
+    }).pipe(reportThreadErrors),
+  ),
+);
+
+const threadRenameCommand = Command.make("rename", {
+  ...projectLocationFlags,
+  thread: threadArgument,
+  title: Argument.String("title").pipe(Argument.withDescription("New thread title.")),
+  json: jsonFlag,
+}).pipe(
+  Command.withDescription("Rename a thread."),
+  Command.withHandler((flags) =>
+    Effect.gen(function* () {
+      const threadId = yield* decodeThreadId(flags.thread);
+      const title = yield* decodeTitle(flags.title).pipe(
+        Effect.mapError(() => new ThreadUsageError({ detail: "The title is empty." })),
+      );
+      return yield* withThreadTools(
+        flags,
+        Effect.fn("cli.thread.rename")(function* (tools) {
+          const result = yield* renameThread(tools, threadId, title);
+          yield* flags.json ? printJson(result) : Console.log(`Renamed to ${result.title}.`);
+        }),
+      );
+    }).pipe(reportThreadErrors),
+  ),
+);
+
 export const threadCommand = Command.make("thread").pipe(
   Command.withDescription("Start, message, and read threads on the running server."),
   Command.withSubcommands([
@@ -1301,5 +1418,7 @@ export const threadCommand = Command.make("thread").pipe(
     threadStopCommand,
     threadConfigureCommand,
     threadWaitCommand,
+    threadPullRequestsCommand,
+    threadRenameCommand,
   ]),
 );
