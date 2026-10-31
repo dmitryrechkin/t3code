@@ -24,9 +24,14 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Sync main with upstream
+      - name: Rebase fork commits onto upstream
         run: |
+          git config user.name "fork sync"
+          git config user.email "fork-sync@users.noreply.github.com"
           git remote add upstream https://github.com/pingdotgg/t3code.git
           git fetch upstream main
-          git reset --hard upstream/main
-          git push origin main --force-with-lease
+          # Rebase keeps this workflow on main; a reset would delete it.
+          git rebase upstream/main
+
+      - name: Push rebased main
+        run: git push origin main --force-with-lease
