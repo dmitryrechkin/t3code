@@ -45,18 +45,19 @@ function keepWindowsProsePathEscape(this: EscapeCompileContext) {
  * destinations themselves. Prose paths end at whitespace: past that, nothing tells a path
  * from a sentence, and `C:\x and \*this\*` must still read `*this*`.
  */
-export function remarkKeepWindowsProsePaths(this: Processor) {
+function keepWindowsProsePaths(this: Processor) {
   (this.data().fromMarkdownExtensions ??= []).push({
     exit: { characterEscape: keepWindowsProsePathEscape },
   });
 }
+export const remarkKeepWindowsProsePaths = keepWindowsProsePaths;
 
 /**
  * CommonMark reads the `\.` in `C:\me\.t3\shot.png` as an escape. Every backslash in a
  * Windows path is a separator, so link, image, and definition destinations that are
  * Windows paths keep the text as written, and so do escapes inside drive paths.
  */
-export function remarkKeepWindowsPaths(this: Processor) {
+function keepWindowsPaths(this: Processor) {
   (this.data().fromMarkdownExtensions ??= []).push({
     exit: {
       resourceDestinationString: keepWindowsPathDestination,
@@ -65,3 +66,4 @@ export function remarkKeepWindowsPaths(this: Processor) {
     },
   });
 }
+export const remarkKeepWindowsPaths = keepWindowsPaths;
